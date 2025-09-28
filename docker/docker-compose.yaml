@@ -1,0 +1,38 @@
+version: '3.8'
+name: orders-service
+services:
+  postgres:
+    image: "postgres:17.6"
+    container_name: postgres-orders
+    healthcheck:
+      test: [ "CMD", "pg_isready", "-U", "orders-service"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      POSTGRES_PASSWORD: admin
+      POSTGRES_USER: orders-service
+      POSTGRES_DB: orders-service
+    ports:
+      - "5432:5432"
+  rabbitmq:
+    image: "rabbitmq:4.1.4"
+    container_name: rabbitmq-orders
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+  app:
+    container_name: orders-service
+    ports:
+      - "8000:8000"
+    build:
+      context: ../
+      dockerfile: docker/dev.Dockerfile
+    depends_on:
+      postgres:
+          condition: service_healthy
