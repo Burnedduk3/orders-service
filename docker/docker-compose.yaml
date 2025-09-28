@@ -29,7 +29,7 @@ services:
   app:
     container_name: orders-service
     ports:
-      - "8000:8000"
+      - "8100:8100"
     build:
       context: ../
       dockerfile: docker/dev.Dockerfile
