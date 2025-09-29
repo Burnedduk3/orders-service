@@ -3,6 +3,8 @@ environment: development
 
 version: 1.0.0
 
+log_level: info
+
 server:
   port: "8100"
   host: "0.0.0.0"
@@ -18,10 +20,6 @@ database:
   password: "admin"
   database: "orders-service"
   ssl_mode: "disable"
-
-rabbitmq:
-  host: 192.168.2.61
-  port: 5672
 
 security:
   rate_limit_rps: 100

@@ -3,8 +3,11 @@ package http
 import (
 	"context"
 	"fmt"
+
 	"orders-service/internal/adapters/http/handlers"
 	"orders-service/internal/adapters/http/middlewares/logging"
+	"orders-service/internal/adapters/persistence/orders_repository"
+	"orders-service/internal/application/usecases"
 	"orders-service/internal/config"
 	"orders-service/internal/infrastructure"
 	"orders-service/pkg/logger"
@@ -17,7 +20,7 @@ type Server struct {
 	echo        *echo.Echo
 	config      *config.Config
 	logger      logger.Logger
-	connections *infrastructure.DatabaseConnections // Add this
+	connections *infrastructure.DatabaseConnections
 }
 
 func NewServer(cfg *config.Config, log logger.Logger, connections *infrastructure.DatabaseConnections) (*Server, error) {
@@ -31,7 +34,7 @@ func NewServer(cfg *config.Config, log logger.Logger, connections *infrastructur
 		echo:        e,
 		config:      cfg,
 		logger:      log,
-		connections: connections, // Add this
+		connections: connections,
 	}
 
 	// Setup middleware
@@ -76,8 +79,17 @@ func (s *Server) setupMiddleware() {
 }
 
 func (s *Server) setupRoutes() {
-	// Health check handlers with database connections
-	healthHandler := handlers.NewHealthHandler(s.logger, s.connections) // Updated
+	// Health check handler
+	healthHandler := handlers.NewHealthHandler(s.logger, s.connections)
+
+	// Initialize repository
+	orderRepo := order_repository.NewGormOrderRepository(s.connections.GetGormDB())
+
+	// Initialize use cases
+	orderUseCases := usecases.NewOrderUseCases(orderRepo, s.logger)
+
+	// Initialize handlers
+	orderHandler := handlers.NewOrderHandler(orderUseCases, s.logger)
 
 	// API v1 routes
 	v1 := s.echo.Group("/api/v1")
@@ -89,6 +101,42 @@ func (s *Server) setupRoutes() {
 
 	// Metrics endpoint
 	v1.GET("/metrics", healthHandler.Metrics)
+
+	// Order routes
+	orders := v1.Group("/orders")
+	{
+		// CRUD operations
+		orders.POST("", orderHandler.CreateOrder)       // Create order
+		orders.GET("", orderHandler.ListOrders)         // List all orders
+		orders.GET("/:id", orderHandler.GetOrder)       // Get order by ID
+		orders.DELETE("/:id", orderHandler.DeleteOrder) // Delete order
+
+		// Order items management
+		orders.POST("/:id/items", orderHandler.AddItemToOrder)                    // Add item to order
+		orders.DELETE("/:id/items/:product_id", orderHandler.RemoveItemFromOrder) // Remove item from order
+		orders.PUT("/:id/items/:product_id", orderHandler.UpdateItemQuantity)     // Update item quantity
+
+		// Order actions
+		orders.POST("/:id/confirm", orderHandler.ConfirmOrder)    // Confirm order
+		orders.POST("/:id/cancel", orderHandler.CancelOrder)      // Cancel order
+		orders.PUT("/:id/status", orderHandler.UpdateOrderStatus) // Update order status
+	}
+
+	// Query routes
+	v1.GET("/customers/:customer_id/orders", orderHandler.GetCustomerOrders) // Get orders by customer
+	v1.GET("/orders/status/:status", orderHandler.GetOrdersByStatus)         // Get orders by status
+
+	s.logRegisteredRoutes()
+}
+
+func (s *Server) logRegisteredRoutes() {
+	s.logger.Info("HTTP routes registered:")
+	for _, route := range s.echo.Routes() {
+		s.logger.Info("Route registered",
+			"method", route.Method,
+			"path", route.Path,
+			"name", route.Name)
+	}
 }
 
 func (s *Server) Start() error {

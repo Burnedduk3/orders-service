@@ -12,11 +12,11 @@ import (
 type Config struct {
 	Environment string         `mapstructure:"environment"`
 	Version     string         `mapstructure:"version"`
+	LogLevel    string         `mapstructure:"log_level"`
 	Server      ServerConfig   `mapstructure:"server"`
 	Database    DatabaseConfig `mapstructure:"database"`
 	Security    SecurityConfig `mapstructure:"security"`
 	Logging     LoggingConfig  `mapstructure:"logging"`
-	RabbitMQ    RabbitMQConfig `mapstructure:"rabbitmq"`
 }
 
 type ServerConfig struct {
@@ -88,6 +88,7 @@ func setDefaults(v *viper.Viper) {
 	// Server defaults
 	v.SetDefault("server.port", "8080")
 	v.SetDefault("version", "0.0.1")
+	v.SetDefault("log_level", "info")
 	v.SetDefault("server.host", "0.0.0.0")
 	v.SetDefault("server.read_timeout", 15*time.Second)
 	v.SetDefault("server.write_timeout", 30*time.Second)
@@ -97,8 +98,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.cors.allow_headers", []string{"*"})
 
 	DatabaseDefaults(v)
-
-	RabbitMQDefaults(v)
 
 	v.SetDefault("security.rate_limit_rps", 100)
 	v.SetDefault("security.rate_limit_burst", 200)

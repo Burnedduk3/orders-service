@@ -1,104 +1,127 @@
-package postgres
+// internal/adapters/persistence/connection.go
+package persistence
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"time"
 
 	"orders-service/internal/config"
 	"orders-service/pkg/logger"
 
-	"github.com/jmoiron/sqlx"
-	_ "github.com/lib/pq"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
-type PostgresDB struct {
-	db     *sqlx.DB
+type GormDB struct {
+	db     *gorm.DB
 	logger logger.Logger
 }
 
-func NewPostgresConnection(cfg *config.DatabaseConfig, logger logger.Logger) (*PostgresDB, error) {
+func NewGormConnection(cfg *config.Config, log logger.Logger) (*GormDB, error) {
 	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
-		cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.Database, cfg.SSLMode)
+		cfg.Database.Host, cfg.Database.Port, cfg.Database.Username, cfg.Database.Password, cfg.Database.Database, cfg.Database.SSLMode)
 
-	db, err := sqlx.Connect("postgres", dsn)
+	// Configure GORM with your zap logger
+	gormLogLevel := StringToGormLogLevel(cfg.LogLevel)
+
+	customLogger := NewGormZapLoggerWithConfig(log, GormLoggerConfig{
+		LogLevel:                  gormLogLevel,
+		IgnoreRecordNotFoundError: true,
+		SlowThreshold:             200 * time.Millisecond,
+	})
+
+	gormConfig := &gorm.Config{
+		Logger: customLogger,
+		NowFunc: func() time.Time {
+			return time.Now().UTC()
+		},
+	}
+
+	db, err := gorm.Open(postgres.Open(dsn), gormConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to postgres: %w", err)
+		return nil, fmt.Errorf("failed to connect to postgres with GORM: %w", err)
+	}
+
+	// Get underlying sql.DB to configure connection pool
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get underlying sql.DB: %w", err)
 	}
 
 	// Configure connection pool
-	db.SetMaxOpenConns(cfg.MaxOpenConns)
-	db.SetMaxIdleConns(cfg.MaxIdleConns)
-	db.SetConnMaxLifetime(cfg.MaxLifetime)
+	sqlDB.SetMaxOpenConns(cfg.Database.MaxOpenConns)
+	sqlDB.SetMaxIdleConns(cfg.Database.MaxIdleConns)
+	sqlDB.SetConnMaxLifetime(cfg.Database.MaxLifetime)
 
 	// Test connection
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := db.PingContext(ctx); err != nil {
+	if err := sqlDB.PingContext(ctx); err != nil {
 		return nil, fmt.Errorf("failed to ping postgres: %w", err)
 	}
 
-	logger.Info("PostgreSQL connection established",
-		"host", cfg.Host,
-		"port", cfg.Port,
-		"database", cfg.Database,
-		"max_open_conns", cfg.MaxOpenConns)
+	log.Info("GORM PostgreSQL connection established",
+		"host", cfg.Database.Host,
+		"port", cfg.Database.Port,
+		"database", cfg.Database.Database,
+		"max_open_conns", cfg.Database.MaxOpenConns)
 
-	return &PostgresDB{
+	return &GormDB{
 		db:     db,
-		logger: logger.With("component", "postgres"),
+		logger: log.With("component", "gorm"),
 	}, nil
 }
 
-func (p *PostgresDB) DB() *sqlx.DB {
-	return p.db
+func (g *GormDB) DB() *gorm.DB {
+	return g.db
 }
 
-func (p *PostgresDB) Close() error {
-	p.logger.Info("Closing PostgreSQL connection")
-	return p.db.Close()
-}
-
-// Health check implementation
-func (p *PostgresDB) HealthCheck(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-
-	var result int
-	err := p.db.GetContext(ctx, &result, "SELECT 1")
-	if err != nil {
-		p.logger.Error("PostgreSQL health check failed", "error", err)
-		return fmt.Errorf("postgres health check failed: %w", err)
-	}
-
-	return nil
-}
-
-// Transaction helper
-func (p *PostgresDB) WithTransaction(ctx context.Context, fn func(tx *sql.Tx) error) error {
-	tx, err := p.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-
-	defer func() {
-		if err != nil {
-			if rollbackErr := tx.Rollback(); rollbackErr != nil {
-				p.logger.Error("Failed to rollback transaction", "error", rollbackErr)
-			}
-		}
-	}()
-
-	err = fn(tx)
+func (g *GormDB) Close() error {
+	g.logger.Info("Closing GORM PostgreSQL connection")
+	sqlDB, err := g.db.DB()
 	if err != nil {
 		return err
 	}
+	return sqlDB.Close()
+}
 
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
+// Health check implementation
+func (g *GormDB) HealthCheck(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	sqlDB, err := g.db.DB()
+	if err != nil {
+		g.logger.Error("Failed to get underlying sql.DB for health check", "error", err)
+		return fmt.Errorf("gorm health check failed: %w", err)
+	}
+
+	if err := sqlDB.PingContext(ctx); err != nil {
+		g.logger.Error("GORM PostgreSQL health check failed", "error", err)
+		return fmt.Errorf("gorm postgres health check failed: %w", err)
 	}
 
 	return nil
+}
+
+// AutoMigrate runs database migrations
+func (g *GormDB) AutoMigrate(models ...interface{}) error {
+	g.logger.Info("Running database migrations")
+
+	if err := g.db.AutoMigrate(models...); err != nil {
+		g.logger.Error("Database migration failed", "error", err)
+		return fmt.Errorf("database migration failed: %w", err)
+	}
+
+	g.logger.Info("Database migrations completed successfully")
+	return nil
+}
+
+// Transaction helper for GORM
+func (g *GormDB) WithTransaction(ctx context.Context, fn func(tx *gorm.DB) error) error {
+	return g.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return fn(tx)
+	})
 }

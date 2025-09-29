@@ -15,17 +15,6 @@ services:
       POSTGRES_DB: orders-service
     ports:
       - "5432:5432"
-  rabbitmq:
-    image: "rabbitmq:4.1.4"
-    container_name: rabbitmq-orders
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-    ports:
-      - "5672:5672"
-      - "15672:15672"
   app:
     container_name: orders-service
     ports:
